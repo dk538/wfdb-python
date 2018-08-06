@@ -164,6 +164,70 @@ class XQRS(object):
                                            self.fs) * 2
 
 
+    def _t_peaks(self, peak_ind):
+        """Determines whether a local peak is a t wave"""
+
+        # Get half the qrs width of the signal to the left.
+        # Should this be squared?
+        try:
+            closest_qrs = self.qrs_inds[self.qrs_inds < peak_ind].max()
+        except:
+            return False
+
+        sig_segment = normalize((self.sig_f[peak_ind - self.qrs_radius:peak_ind + self.qrs_radius]
+                                 ).reshape(-1, 1), axis=0)
+        last_qrs_segment = normalize((self.sig_f[closest_qrs - self.qrs_radius:
+                                      closest_qrs]).reshape(-1, 1), axis=0)
+
+        segment_slope = np.diff(sig_segment, axis=0)
+        last_qrs_slope = np.diff(last_qrs_segment, axis=0)
+
+        # Should we be using absolute values?
+        if max(abs(segment_slope)) < 0.75*max(abs(last_qrs_slope)):
+            if (peak_ind - closest_qrs) < self.t_inspect_period:
+                print("T peak detected")
+                return True
+            else:
+                print("Wrong timeframe T")
+                return False
+        else:
+            print("High Gradient T")
+            return False
+
+
+
+    def _p_peaks(self, peak_ind):
+        """Determines whether a local peak is a p wave"""
+
+        try:
+            closest_qrs = self.qrs_inds[self.qrs_inds < peak_ind].max()
+        except:
+            return False
+
+        # Get half the qrs width of the signal to the left.
+        # Should this be squared?
+        sig_segment = normalize((self.sig_f[peak_ind - self.qrs_radius:peak_ind + self.qrs_radius]
+                                ).reshape(-1, 1), axis=0)
+        last_qrs_segment = normalize((self.sig_f[closest_qrs - self.qrs_radius:
+                                      closest_qrs]).reshape(-1, 1), axis=0)
+
+        segment_slope = np.diff(sig_segment, axis=0)
+        last_qrs_slope = np.diff(last_qrs_segment, axis=0)
+
+        # Should we be using absolute values?
+        if max(abs(segment_slope)) < 0.75*max(abs(last_qrs_slope)):
+            if (peak_ind - closest_qrs) > self.rr_init*0.8:
+                print("P peak detected")
+                return True
+            else:
+                print("Wrong timeframe P")
+                return False
+        else:
+            print("High Gradient P")
+            return False
+
+
+
     def _mwi(self):
         """
         Apply moving wave integration (mwi) with a ricker (Mexican hat)
@@ -442,6 +506,8 @@ class XQRS(object):
         Check whether a segment is a t-wave. Compare the maximum gradient of
         the filtered signal segment with that of the previous qrs segment.
 
+        This is checking a peak that we are already quite confident is a QRS complex, not a raw peak
+
         Parameters
         ----------
         peak_num : int
@@ -520,8 +586,12 @@ class XQRS(object):
 
         # Detected qrs indices
         self.qrs_inds = []
+        self.t_peak_inds = []
+        self.p_peak_inds = []
         # qrs indices found via backsearch
         self.backsearch_qrs_inds = []
+
+
 
         # Iterate through mwi signal peak indices
         for self.peak_num in range(self.n_peaks_i):
@@ -540,6 +610,19 @@ class XQRS(object):
             self.qrs_inds = np.array(self.qrs_inds) + self.sampfrom
         else:
             self.qrs_inds = np.array(self.qrs_inds)
+
+        local_peaks = find_local_peaks(self.sig_f, self.qrs_radius)
+
+        print(local_peaks)
+
+        for i in range(len(local_peaks)):
+            print("scanning peak")
+            if self._p_peaks(local_peaks[i]):
+                self.p_peak_inds.append(local_peaks[i])
+            elif self._t_peaks(local_peaks[i]):
+                self.t_peak_inds.append(local_peaks[i])
+            else:
+                continue
 
         if self.verbose:
             print('QRS detection complete.')
@@ -647,7 +730,7 @@ def xqrs_detect(sig, fs, sampfrom=0, sampto='end', conf=None,
     """
     xqrs = XQRS(sig=sig, fs=fs, conf=conf)
     xqrs.detect(sampfrom=sampfrom, sampto=sampto, verbose=verbose)
-    return xqrs.qrs_inds
+    return xqrs.qrs_inds, xqrs.t_peak_inds, xqrs.p_peak_inds
 
 
 def time_to_sample_number(seconds, frequency):
