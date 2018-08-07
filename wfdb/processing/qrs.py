@@ -165,9 +165,18 @@ class XQRS(object):
 
 
     def _t_peaks(self, peak_ind):
-        """Determines whether a local peak is a t wave"""
+        """Determines whether a local peak is a t wave
 
-        # Get half the qrs width of the signal to the left.
+            Procedure:
+            -Takes the closest QRS complex to the left of the peak to be checked
+            -Take segments of the QRS complex and of the area around the peak
+            -Max segment slope should be less than 0.75 times the max QRS slope (this should hopefully filter out
+            unwanted 'noisy' peaks)
+            -Peak should be with a short inspect period away from the previous QRS complex
+
+        """
+
+        # Get the qrs radius of the signal either side of the peak.
         # Should this be squared?
         try:
             closest_qrs = self.qrs_inds[self.qrs_inds < peak_ind].max()
@@ -197,14 +206,23 @@ class XQRS(object):
 
 
     def _p_peaks(self, peak_ind):
-        """Determines whether a local peak is a p wave"""
+        """Determines whether a local peak is a p wave
+
+            Procedure:
+            -Takes the closest QRS complex to the left of the peak to be checked
+            -Take segments of the QRS complex and of the area around the peak
+            -Max segment slope should be less than 0.75 times the max QRS slope (this should hopefully filter out
+            unwanted 'noisy' peaks)
+            -Peak should be more than 0.8 times an average RR interval from the last QRS complex
+
+        """
 
         try:
             closest_qrs = self.qrs_inds[self.qrs_inds < peak_ind].max()
         except:
             return False
 
-        # Get half the qrs width of the signal to the left.
+        # Get the qrs radius of the signal either side of the peak.
         # Should this be squared?
         sig_segment = normalize((self.sig_f[peak_ind - self.qrs_radius:peak_ind + self.qrs_radius]
                                 ).reshape(-1, 1), axis=0)
