@@ -4,13 +4,12 @@ import pdb
 import numpy as np
 from scipy import signal
 from sklearn.preprocessing import normalize
+import pywt
+from statsmodels.robust import mad
 
 from .basic import get_filter_gain
 from .peaks import find_local_peaks
 from ..io.record import Record
-
-#test commit
-
 
 class XQRS(object):
     """
@@ -146,6 +145,15 @@ class XQRS(object):
         self.ref_period = int(self.conf.ref_period * self.fs)
         self.t_inspect_period = int(self.conf.t_inspect_period * self.fs)
 
+    def _cwt(self, n, level):
+        """Applies continuous wavelet transform and thresholding to signal to denoise, n = Daubechies number"""
+        coeffs = pywt.wavedec(self.sig, 'db{0}'.format(n), level=level)
+        sigma = mad(coeffs[-level])
+        thresh = sigma * np.sqrt(np.log(self.qrs_width))
+        coeffs = map(lambda x: pywt.threshold(x, value=thresh, mode='hard'), coeffs)
+        print(coeffs)
+        self.sig_f = pywt.waverec(coeffs, 'db{0}'.format(n))
+
 
     def _bandpass(self, fc_low=5, fc_high=20):
         """
@@ -157,8 +165,7 @@ class XQRS(object):
 
         b, a = signal.butter(2, [float(fc_low) * 2 / self.fs,
                                  float(fc_high) * 2 / self.fs], 'pass')
-        self.sig_f = signal.filtfilt(b, a, self.sig[self.sampfrom:self.sampto],
-                                     axis=0)
+        #self.sig_f = signal.filtfilt(b, a, self.sig[self.sampfrom:self.sampto],axis=0)
         # Save the passband gain (x2 due to double filtering)
         self.filter_gain = get_filter_gain(b, a, np.mean([fc_low, fc_high]),
                                            self.fs) * 2
@@ -186,13 +193,13 @@ class XQRS(object):
         sig_segment = normalize((self.sig_f[peak_ind - self.qrs_radius:peak_ind + self.qrs_radius]
                                  ).reshape(-1, 1), axis=0)
         last_qrs_segment = normalize((self.sig_f[closest_qrs - self.qrs_radius:
-                                      closest_qrs]).reshape(-1, 1), axis=0)
+                                      closest_qrs + self.qrs_radius]).reshape(-1, 1), axis=0)
 
         segment_slope = np.diff(sig_segment, axis=0)
         last_qrs_slope = np.diff(last_qrs_segment, axis=0)
 
         # Should we be using absolute values?
-        if max(abs(segment_slope)) < 0.75*max(abs(last_qrs_slope)):
+        if max(abs(segment_slope)) < max(abs(last_qrs_slope)):
             if (peak_ind - closest_qrs) < self.t_inspect_period:
                 print("T peak detected")
                 return True
@@ -213,7 +220,8 @@ class XQRS(object):
             -Take segments of the QRS complex and of the area around the peak
             -Max segment slope should be less than 0.75 times the max QRS slope (this should hopefully filter out
             unwanted 'noisy' peaks)
-            -Peak should be more than 0.8 times an average RR interval from the last QRS complex
+            -Peak should be more than 0.8 times an average RR interval from the last QRS complex, and less than 0.95
+            times
 
         """
 
@@ -227,14 +235,14 @@ class XQRS(object):
         sig_segment = normalize((self.sig_f[peak_ind - self.qrs_radius:peak_ind + self.qrs_radius]
                                 ).reshape(-1, 1), axis=0)
         last_qrs_segment = normalize((self.sig_f[closest_qrs - self.qrs_radius:
-                                      closest_qrs]).reshape(-1, 1), axis=0)
+                                      closest_qrs + self.qrs_radius]).reshape(-1, 1), axis=0)
 
         segment_slope = np.diff(sig_segment, axis=0)
         last_qrs_slope = np.diff(last_qrs_segment, axis=0)
 
         # Should we be using absolute values?
-        if max(abs(segment_slope)) < 0.75*max(abs(last_qrs_slope)):
-            if (peak_ind - closest_qrs) > self.rr_init*0.8:
+        if max(abs(segment_slope)) < max(abs(last_qrs_slope)):
+            if ((peak_ind - closest_qrs) > self.rr_init*0.8 and (peak_ind - closest_qrs) < 0.95*self.rr_init):
                 print("P peak detected")
                 return True
             else:
@@ -251,6 +259,8 @@ class XQRS(object):
         Apply moving wave integration (mwi) with a ricker (Mexican hat)
         wavelet onto the filtered signal, and save the square of the
         integrated signal.
+
+        This is just like blob detection but 1D for features the width of QRS complexes
 
         The width of the hat is equal to the qrs width
 
@@ -629,9 +639,13 @@ class XQRS(object):
         else:
             self.qrs_inds = np.array(self.qrs_inds)
 
-        local_peaks = find_local_peaks(self.sig_f, self.qrs_radius)
+        #local_peaks = find_local_peaks(self.sig_f, self.qrs_radius)
 
-        print(local_peaks)
+        pt_filter = signal.ricker(3*self.qrs_width, 4)
+
+        pt_signal = signal.filtfilt(pt_filter, [1], self.sig_f, axis=0) ** 2
+
+        local_peaks = find_local_peaks(pt_signal, self.qrs_radius)
 
         for i in range(len(local_peaks)):
             print("scanning peak")
@@ -688,8 +702,9 @@ class XQRS(object):
 
         # Get/set signal configuration fields from Conf object
         self._set_conf()
-        # Bandpass filter the signal
+        # wave transform and threshold the signal
         self._bandpass()
+        self._cwt(4, 4)
         # Compute moving wave integration of filtered signal
         self._mwi()
 
@@ -748,7 +763,7 @@ def xqrs_detect(sig, fs, sampfrom=0, sampto='end', conf=None,
     """
     xqrs = XQRS(sig=sig, fs=fs, conf=conf)
     xqrs.detect(sampfrom=sampfrom, sampto=sampto, verbose=verbose)
-    return xqrs.qrs_inds, xqrs.t_peak_inds, xqrs.p_peak_inds
+    return xqrs.qrs_inds, xqrs.t_peak_inds, xqrs.p_peak_inds, xqrs.sig_f
 
 
 def time_to_sample_number(seconds, frequency):
